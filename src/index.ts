@@ -51,66 +51,69 @@ export function apply(ctx: Context) {
       name: "deeptutor_run",
       description:
         "Execute one learning call on the DeepTutor service: deep_solve (in-depth explanation), deep_question (generate self-test questions), deep_research (deep research), chat (conversation), mastery_path (learning path planning), visualize / math_animator (visualization). Can mount knowledge bases (kbs) and tools (tools like rag / web_search). Returns the final answer plus session_id; pass session_id in later turns to continue the context (inherits chat history, knowledge bases and tools).",
+      // dsh-tools 0.2.x runtime accepts new schema format but types still expect old flat format
       parameters: {
-        capability: {
-          type: "string",
-          enum: [...CAPABILITIES],
-          required: true,
-          description: "The learning capability to run",
+        type: "object",
+        properties: {
+          capability: {
+            type: "string",
+            enum: [...CAPABILITIES],
+            description: "The learning capability to run",
+          },
+          prompt: {
+            type: "string",
+            description:
+              "The learning question or instruction for this turn (e.g. explain the async/await state machine)",
+          },
+          kbs: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Knowledge base names (check deeptutor_kb list for available ones, e.g. the user's dotnet/sqlserver bases)",
+          },
+          tools: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Tools to enable: rag (KB retrieval), web_search, reason, brainstorm, paper_search, code_execution, read_source, etc.",
+          },
+          session_id: {
+            type: "string",
+            description:
+              "Session ID from a previous deeptutor_run call to continue that context",
+          },
+          config: {
+            type: "object",
+            additionalProperties: true,
+            description:
+              "Capability config key-values, e.g. num_questions=5 for deep_question, mode=report / depth=standard for deep_research",
+          },
+          language: {
+            type: "string",
+            description: "Response language code, default en; use zh for Chinese",
+          },
+          timeout: {
+            type: "number",
+            description: "Timeout in seconds, default 600; use 900+ for deep_research",
+          },
+          max_chars: {
+            type: "number",
+            description:
+              "Max characters of the answer returned to the model, default 30000",
+          },
+          html: {
+            type: "string",
+            description:
+              "Optional output path for a self-contained local HTML render of the answer (bundled md-to-html converter; also writes the companion .md source next to it). e.g. data/study/abstract-class/knowledge.html — open the HTML in a browser to read comfortably. Set it when the user wants browsable/printable study material.",
+          },
+          html_title: {
+            type: "string",
+            description:
+              "HTML page title (default: derived from the html output file name)",
+          },
         },
-        prompt: {
-          type: "string",
-          required: true,
-          description:
-            "The learning question or instruction for this turn (e.g. explain the async/await state machine)",
-        },
-        kbs: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Knowledge base names (check deeptutor_kb list for available ones, e.g. the user's dotnet/sqlserver bases)",
-        },
-        tools: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Tools to enable: rag (KB retrieval), web_search, reason, brainstorm, paper_search, code_execution, read_source, etc.",
-        },
-        session_id: {
-          type: "string",
-          description:
-            "Session ID from a previous deeptutor_run call to continue that context",
-        },
-        config: {
-          type: "object",
-          additionalProperties: true,
-          description:
-            "Capability config key-values, e.g. num_questions=5 for deep_question, mode=report / depth=standard for deep_research",
-        },
-        language: {
-          type: "string",
-          description: "Response language code, default en; use zh for Chinese",
-        },
-        timeout: {
-          type: "number",
-          description: "Timeout in seconds, default 600; use 900+ for deep_research",
-        },
-        max_chars: {
-          type: "number",
-          description:
-            "Max characters of the answer returned to the model, default 30000",
-        },
-        html: {
-          type: "string",
-          description:
-            "Optional output path for a self-contained local HTML render of the answer (bundled md-to-html converter; also writes the companion .md source next to it). e.g. data/study/abstract-class/knowledge.html — open the HTML in a browser to read comfortably. Set it when the user wants browsable/printable study material.",
-        },
-        html_title: {
-          type: "string",
-          description:
-            "HTML page title (default: derived from the html output file name)",
-        },
-      },
+        required: ["capability", "prompt"],
+      } as unknown as import("@deepseek-ai/dsh-tools").ParameterSchemaSpec,
       output: {
         schema: {
           type: "object",
@@ -127,19 +130,21 @@ export function apply(ctx: Context) {
         render: (_args, value) => [{ type: "text", text: value.text ?? "" }],
       },
       async execute(args, exec) {
-        const timeoutMs = (args.timeout ?? 600) * 1000;
-        const maxChars = args.max_chars ?? 30000;
+        // Cast args from JsonValue to expected types (new schema format inference)
+        const a = args as { capability: string; prompt: string; kbs?: string[]; tools?: string[]; session_id?: string; config?: Record<string, unknown>; language?: string; timeout?: number; max_chars?: number; html?: string; html_title?: string };
+        const timeoutMs = (a.timeout ?? 600) * 1000;
+        const maxChars = a.max_chars ?? 30000;
         try {
           if (await ensureApi()) {
-            const r = await wsRunTurn(args, timeoutMs, exec.signal);
-            const htmlNote = await renderHtml(args, r.answer);
+            const r = await wsRunTurn(a, timeoutMs, exec.signal);
+            const htmlNote = await renderHtml(a, r.answer);
             return json({
               mode: "http",
               sessionId: r.sessionId,
               toolCalls: r.toolCalls,
               errors: r.errors,
               text:
-                configHint() + fmtTurnResult(args.capability, r, maxChars) + htmlNote,
+                configHint() + fmtTurnResult(a.capability, r, maxChars) + htmlNote,
             });
           }
         } catch (err: any) {
@@ -151,15 +156,15 @@ export function apply(ctx: Context) {
         }
         // fallback: local/SSH CLI
         try {
-          const r = await cliRunTurn(args, timeoutMs, exec.signal);
-          const htmlNote = await renderHtml(args, r.answer);
+          const r = await cliRunTurn(a, timeoutMs, exec.signal);
+          const htmlNote = await renderHtml(a, r.answer);
           return json({
             mode: "cli",
             sessionId: r.sessionId,
             toolCalls: r.toolCalls,
             errors: r.errors,
             text:
-              configHint() + fmtTurnResult(args.capability, r, maxChars) + htmlNote,
+              configHint() + fmtTurnResult(a.capability, r, maxChars) + htmlNote,
           });
         } catch (err: any) {
           if (exec.signal.aborted) {
@@ -181,38 +186,42 @@ export function apply(ctx: Context) {
       name: "deeptutor_kb",
       description:
         "Manage/search DeepTutor knowledge bases: list all bases, search inside a base (RAG hit snippets), info for details. Works in both local and remote deployments. Search the user's personal knowledge bases before generating learning content and combine the hits with authoritative sources.",
+      // dsh-tools 0.2.x runtime accepts new schema format but types still expect old flat format
       parameters: {
-        action: {
-          type: "string",
-          enum: ["list", "search", "info"],
-          required: true,
-          description: "What to do with the knowledge bases",
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["list", "search", "info"],
+            description: "What to do with the knowledge bases",
+          },
+          kb: {
+            type: "string",
+            description: "Knowledge base name (required for search/info)",
+          },
+          query: {
+            type: "string",
+            description:
+              "Search question (required for search, e.g. C# generics covariance/contravariance)",
+          },
+          mode: {
+            type: "string",
+            enum: ["hybrid", "dense", "sparse"],
+            description: "Retrieval mode, default hybrid",
+          },
+          top_k: {
+            type: "number",
+            description:
+              "Number of hits to return, default 5 (applied locally to the CLI search result; the deeptutor CLI has no --top-k flag)",
+          },
+          max_chars: {
+            type: "number",
+            description:
+              "Max characters of the returned content, default 30000",
+          },
         },
-        kb: {
-          type: "string",
-          description: "Knowledge base name (required for search/info)",
-        },
-        query: {
-          type: "string",
-          description:
-            "Search question (required for search, e.g. C# generics covariance/contravariance)",
-        },
-        mode: {
-          type: "string",
-          enum: ["hybrid", "dense", "sparse"],
-          description: "Retrieval mode, default hybrid",
-        },
-        top_k: {
-          type: "number",
-          description:
-            "Number of hits to return, default 5 (applied locally to the CLI search result; the deeptutor CLI has no --top-k flag)",
-        },
-        max_chars: {
-          type: "number",
-          description:
-            "Max characters of the returned content, default 30000",
-        },
-      },
+        required: ["action"],
+      } as unknown as import("@deepseek-ai/dsh-tools").ParameterSchemaSpec,
       output: {
         schema: {
           type: "object",
@@ -228,13 +237,15 @@ export function apply(ctx: Context) {
         render: (_args, value) => [{ type: "text", text: value.text ?? "" }],
       },
       async execute(args, exec) {
-        const maxChars = args.max_chars ?? 30000;
+        // Cast args from JsonValue to expected types (new schema format inference)
+        const a = args as { action: string; kb?: string; query?: string; mode?: string; top_k?: number; max_chars?: number };
+        const maxChars = a.max_chars ?? 30000;
         // search goes through the CLI (REST has no dedicated search route);
         // list/info prefer HTTP, fall back to CLI
-        if (args.action !== "search") {
+        if (a.action !== "search") {
           try {
             if (await ensureApi()) {
-              if (args.action === "list") {
+              if (a.action === "list") {
                 const arr = await apiJson("/api/v1/knowledge/list", undefined, {
                   signal: exec.signal,
                 });
@@ -255,40 +266,40 @@ export function apply(ctx: Context) {
                 });
               }
               const kb = await apiJson(
-                `/api/v1/knowledge/${encodeURIComponent(args.kb ?? "")}`,
+                `/api/v1/knowledge/${encodeURIComponent(a.kb ?? "")}`,
                 undefined,
                 { signal: exec.signal },
               );
               return json({
                 action: "info",
                 mode: "http",
-                kb: args.kb,
+                kb: a.kb,
                 text: truncate(JSON.stringify(kb, null, 2), maxChars),
               });
             }
           } catch (err: any) {
             console.log(
-              `[deeptutor] kb ${args.action} HTTP failed, falling back to CLI: ${err?.message}`,
+              `[deeptutor] kb ${a.action} HTTP failed, falling back to CLI: ${err?.message}`,
             );
           }
         }
         // CLI fallback (local or SSH). NOTE: `kb search` has no --top-k flag
         // (verified on deeptutor CLI 1.5.x); top_k is applied locally below.
         let argv: string[];
-        if (args.action === "list") {
+        if (a.action === "list") {
           argv = ["kb", "list", "--format", "json"];
-        } else if (args.action === "info") {
-          argv = ["kb", "info", args.kb ?? ""];
+        } else if (a.action === "info") {
+          argv = ["kb", "info", a.kb ?? ""];
         } else {
           argv = [
             "kb",
             "search",
-            args.kb ?? "",
-            args.query ?? "",
+            a.kb ?? "",
+            a.query ?? "",
             "--format",
             "json",
             "--mode",
-            args.mode ?? "hybrid",
+            a.mode ?? "hybrid",
           ];
         }
         const { stdout, stderr, code, killed } = await runCli(argv, {
@@ -303,7 +314,7 @@ export function apply(ctx: Context) {
           );
         }
         let body = stdout.trim() || "(empty result)";
-        if (args.action === "search") {
+        if (a.action === "search") {
           try {
             const parsed = JSON.parse(stdout);
             const fmtHit = (s: any, i: number) => {
@@ -317,7 +328,7 @@ export function apply(ctx: Context) {
             // { query, answer, content, sources, provider }; older builds
             // returned a bare array of hits. Accept both.
             if (Array.isArray(parsed)) {
-              const hits = args.top_k ? parsed.slice(0, args.top_k) : parsed;
+              const hits = a.top_k ? parsed.slice(0, a.top_k) : parsed;
               body = `${hits.length} hits:\n\n` + hits.map(fmtHit).join("\n\n");
             } else if (parsed && typeof parsed === "object") {
               const parts: string[] = [];
@@ -325,7 +336,7 @@ export function apply(ctx: Context) {
               if (typeof parsed.answer === "string" && parsed.answer.trim())
                 parts.push(`Answer: ${parsed.answer.trim()}`);
               const sources = Array.isArray(parsed.sources) ? parsed.sources : [];
-              const hits = args.top_k ? sources.slice(0, args.top_k) : sources;
+              const hits = a.top_k ? sources.slice(0, a.top_k) : sources;
               parts.push(`${hits.length} hits:`);
               parts.push(hits.map(fmtHit).join("\n\n"));
               body = parts.join("\n\n");
@@ -335,10 +346,10 @@ export function apply(ctx: Context) {
           }
         }
         return json({
-          action: args.action,
+          action: a.action,
           mode: "cli",
-          kb: args.kb,
-          query: args.query,
+          kb: a.kb,
+          query: a.query,
           text: truncate(body, maxChars),
         });
       },
@@ -351,29 +362,31 @@ export function apply(ctx: Context) {
       name: "deeptutor_note",
       description:
         "Archive a Markdown learning note (study plan, deep-solve summary, wrong answers, etc.) to a DeepTutor notebook (auto-creates the notebook if missing). Record type: chat / question / research / solve.",
+      // dsh-tools 0.2.x runtime accepts new schema format but types still expect old flat format
       parameters: {
-        notebook: {
-          type: "string",
-          required: true,
-          description:
-            "Notebook name, e.g. dotnet-learning (auto-created if missing)",
+        type: "object",
+        properties: {
+          notebook: {
+            type: "string",
+            description:
+              "Notebook name, e.g. dotnet-learning (auto-created if missing)",
+          },
+          title: {
+            type: "string",
+            description: "Record title, e.g. async/await state machine deep-dive notes",
+          },
+          type: {
+            type: "string",
+            enum: ["chat", "question", "research", "solve"],
+            description: "Record type, default chat",
+          },
+          content: {
+            type: "string",
+            description: "Learning note content in Markdown",
+          },
         },
-        title: {
-          type: "string",
-          required: true,
-          description: "Record title, e.g. async/await state machine deep-dive notes",
-        },
-        type: {
-          type: "string",
-          enum: ["chat", "question", "research", "solve"],
-          description: "Record type, default chat",
-        },
-        content: {
-          type: "string",
-          required: true,
-          description: "Learning note content in Markdown",
-        },
-      },
+        required: ["notebook", "title", "content"],
+      } as unknown as import("@deepseek-ai/dsh-tools").ParameterSchemaSpec,
       output: {
         schema: {
           type: "object",
@@ -389,8 +402,10 @@ export function apply(ctx: Context) {
         render: (_args, value) => [{ type: "text", text: value.text ?? "" }],
       },
       async execute(args, exec) {
-        const recordType = (args.type ?? "chat") as string;
-        const nbName = args.notebook.trim();
+        // Cast args from JsonValue to expected types (new schema format inference)
+        const a = args as { notebook?: string; title?: string; type?: string; content?: string };
+        const recordType = (a.type ?? "chat") as string;
+        const nbName = (a.notebook ?? "").trim();
         // HTTP first
         try {
           if (await ensureApi()) {
@@ -424,9 +439,9 @@ export function apply(ctx: Context) {
                 body: JSON.stringify({
                   notebook_ids: [nbId],
                   record_type: recordType,
-                  title: args.title,
-                  user_query: args.title,
-                  output: args.content,
+                  title: a.title,
+                  user_query: a.title,
+                  output: a.content,
                 }),
               },
               { signal: exec.signal },
@@ -434,11 +449,11 @@ export function apply(ctx: Context) {
             return json({
               notebook: nbName,
               nbId: String(nbId),
-              title: args.title,
+              title: a.title,
               mode: "http",
               text:
                 configHint() +
-                `[note archived (HTTP)] notebook=${nbName} (${nbId}), title=${args.title}, type=${recordType}\n${truncate(JSON.stringify(added ?? {}), 800)}`,
+                `[note archived (HTTP)] notebook=${nbName} (${nbId}), title=${a.title}, type=${recordType}\n${truncate(JSON.stringify(added ?? {}), 800)}`,
             });
           }
         } catch (err: any) {
@@ -446,8 +461,8 @@ export function apply(ctx: Context) {
         }
         // CLI fallback: remote deployment uses the remote PY_NOTE script; local deployment runs locally
         const { stdout, stderr, code } = SSH_HOST
-          ? await cliNoteRemote(nbName, args.title, recordType, args.content, exec.signal)
-          : await cliNoteLocal(nbName, args.title, recordType, args.content, exec.signal);
+          ? await cliNoteRemote(nbName, a.title ?? "", recordType, a.content ?? "", exec.signal)
+          : await cliNoteLocal(nbName, a.title ?? "", recordType, a.content ?? "", exec.signal);
         if (code !== 0) {
           throw new Error(
             `[deeptutor_note failed] exit=${code}\n${truncate(stderr || stdout, 2000)}` +
@@ -456,11 +471,11 @@ export function apply(ctx: Context) {
         }
         return json({
           notebook: nbName,
-          title: args.title,
+          title: a.title,
           mode: "cli",
           text:
             configHint() +
-            `[note archived (CLI)] notebook=${nbName}, title=${args.title}, type=${recordType}\n${truncate((stdout ?? "").trim(), 2000)}`,
+            `[note archived (CLI)] notebook=${nbName}, title=${a.title}, type=${recordType}\n${truncate((stdout ?? "").trim(), 2000)}`,
         });
       },
     }),
